@@ -175,6 +175,8 @@ pub struct GammaMarket {
     pub start_date: Option<String>,
     /// Event window start time (ISO 8601).
     pub event_start_time: Option<String>,
+    /// Scheduled game start time (ISO 8601).
+    pub game_start_time: Option<String>,
     /// Market end date (ISO 8601).
     pub end_date: Option<String>,
     /// Whether market is active.
@@ -340,6 +342,18 @@ pub struct GammaMarket {
     pub game_id: Option<String>,
     /// Events linked to this gamma market.
     pub events: Option<Vec<GammaEvent>>,
+    /// Event metadata propagated when this market is loaded through `/events`.
+    #[serde(skip)]
+    pub(crate) event_context: Option<GammaEventContext>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct GammaEventContext {
+    pub id: String,
+    pub slug: Option<String>,
+    pub sport: Option<String>,
+    pub teams: Vec<String>,
+    pub start_time: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -410,12 +424,16 @@ pub struct GammaEvent {
     pub title: Option<String>,
     pub description: Option<String>,
     pub start_date: Option<String>,
+    pub start_time: Option<String>,
     pub end_date: Option<String>,
     pub active: Option<bool>,
     pub closed: Option<bool>,
     pub archived: Option<bool>,
     #[serde(default)]
     pub markets: Vec<GammaMarket>,
+    #[serde(default)]
+    pub teams: Vec<GammaEventTeam>,
+    pub sport: Option<GammaEventSport>,
     /// Event-level liquidity.
     #[serde(
         default,
@@ -460,6 +478,16 @@ pub struct GammaEvent {
     /// <https://github.com/Polymarket/rs-clob-client/blob/main/src/gamma/types/response.rs>.
     #[serde(default, deserialize_with = "deserialize_optional_polymarket_game_id")]
     pub game_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GammaEventTeam {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GammaEventSport {
+    pub sport: String,
 }
 
 /// A tag from the Gamma API `GET /tags`.
@@ -1004,6 +1032,30 @@ mod tests {
         assert_eq!(
             encoded["markets"][0]["gameId"],
             serde_json::json!("dd80aae9-52f9-4c7b-a1cf-7b4ab63cd281:STL:TEX")
+        );
+    }
+
+    #[rstest]
+    fn test_gamma_event_esports_metadata() {
+        let events: Vec<GammaEvent> = load("gamma_event_esports.json");
+        let event = &events[0];
+
+        assert_eq!(event.start_time.as_deref(), Some("2026-09-08T18:00:00Z"));
+        assert_eq!(
+            event
+                .teams
+                .iter()
+                .map(|team| team.name.as_str())
+                .collect::<Vec<_>>(),
+            ["G2 Esports", "Fnatic"]
+        );
+        assert_eq!(
+            event.sport.as_ref().map(|sport| sport.sport.as_str()),
+            Some("lol")
+        );
+        assert_eq!(
+            event.markets[1].game_start_time.as_deref(),
+            Some("2026-09-08T19:30:00Z")
         );
     }
 

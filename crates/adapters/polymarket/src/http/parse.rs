@@ -92,6 +92,14 @@ pub struct PolymarketInstrumentDef {
     /// Game ID for sport markets, kept verbatim because Gamma emits both
     /// numeric and composite `<uuid>:<away>:<home>` forms.
     pub game_id: Option<String>,
+    /// Parent Gamma event ID.
+    pub event_id: Option<String>,
+    /// Parent Gamma event slug.
+    pub event_slug: Option<String>,
+    /// Canonical Gamma sport code.
+    pub event_sport: Option<String>,
+    /// Team names in Gamma order.
+    pub event_teams: Option<Vec<String>>,
 }
 
 /// Parses a Gamma market response into instrument definitions.
@@ -166,7 +174,12 @@ pub fn parse_gamma_market(market: &GammaMarket) -> anyhow::Result<Vec<Polymarket
             maker_fee,
             taker_fee,
             start_date: market.start_date.clone(),
-            event_start_time: market.event_start_time.clone(),
+            event_start_time: market
+                .event_context
+                .as_ref()
+                .and_then(|context| context.start_time.clone())
+                .or_else(|| market.game_start_time.clone())
+                .or_else(|| market.event_start_time.clone()),
             end_date: market.end_date.clone(),
             active,
             closed: market.closed.unwrap_or(false),
@@ -176,6 +189,22 @@ pub fn parse_gamma_market(market: &GammaMarket) -> anyhow::Result<Vec<Polymarket
             crypto_market_config: market.crypto_market_config.clone(),
             fee_schedule: market.fee_schedule.clone(),
             game_id: game_id.clone(),
+            event_id: market
+                .event_context
+                .as_ref()
+                .map(|context| context.id.clone()),
+            event_slug: market
+                .event_context
+                .as_ref()
+                .and_then(|context| context.slug.clone()),
+            event_sport: market
+                .event_context
+                .as_ref()
+                .and_then(|context| context.sport.clone()),
+            event_teams: market
+                .event_context
+                .as_ref()
+                .and_then(|context| (!context.teams.is_empty()).then(|| context.teams.clone())),
         });
     }
 
@@ -411,6 +440,40 @@ fn build_info_json(def: &PolymarketInstrumentDef) -> serde_json::Value {
         map.insert(
             "game_id".to_string(),
             serde_json::Value::String(game_id.clone()),
+        );
+    }
+
+    if let Some(event_id) = &def.event_id {
+        map.insert(
+            "event_id".to_string(),
+            serde_json::Value::String(event_id.clone()),
+        );
+    }
+
+    if let Some(event_slug) = &def.event_slug {
+        map.insert(
+            "event_slug".to_string(),
+            serde_json::Value::String(event_slug.clone()),
+        );
+    }
+
+    if let Some(event_sport) = &def.event_sport {
+        map.insert(
+            "event_sport".to_string(),
+            serde_json::Value::String(event_sport.clone()),
+        );
+    }
+
+    if let Some(event_teams) = &def.event_teams {
+        map.insert(
+            "event_teams".to_string(),
+            serde_json::Value::Array(
+                event_teams
+                    .iter()
+                    .cloned()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
         );
     }
 
@@ -686,6 +749,10 @@ mod tests {
             Some("2026-03-12T09:20:00Z")
         );
         assert_eq!(info.get_str("game_id"), None);
+        assert_eq!(info.get_str("event_id"), None);
+        assert_eq!(info.get_str("event_slug"), None);
+        assert_eq!(info.get_str("event_sport"), None);
+        assert_eq!(info.get("event_teams"), None);
         assert_eq!(info.get_str("min_order_size"), Some("5"));
         assert_eq!(info.get_bool("neg_risk"), Some(false));
         assert_eq!(info.get("fee_schedule"), None);

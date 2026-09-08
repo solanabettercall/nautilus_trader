@@ -1862,6 +1862,10 @@ mod tests {
             crypto_market_config: None,
             fee_schedule: None,
             game_id: None,
+            event_id: None,
+            event_slug: None,
+            event_sport: None,
+            event_teams: None,
         };
 
         crate::http::parse::create_instrument_from_def(&def, UnixNanos::from(1))

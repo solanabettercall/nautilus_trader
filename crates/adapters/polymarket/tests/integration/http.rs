@@ -3494,6 +3494,83 @@ async fn test_request_instruments_by_event_params_carries_composite_sports_game_
 
 #[rstest]
 #[tokio::test]
+async fn test_event_scoped_esports_instruments_carry_event_metadata() {
+    let state = TestServerState::default();
+    *state.gamma_events_response.lock().await = Some(load_json("gamma_event_esports.json"));
+
+    let addr = start_mock_server(state.clone()).await;
+    let client = create_gamma_domain_client(&addr);
+    let instruments = client
+        .request_instruments_by_event_params(GetGammaEventsParams::default())
+        .await
+        .unwrap();
+
+    assert_eq!(instruments.len(), 4);
+    for instrument in instruments {
+        let InstrumentAny::BinaryOption(binary) = instrument else {
+            panic!("Expected BinaryOption");
+        };
+        let info = binary.info.as_ref().expect("info should be present");
+        assert_eq!(info.get_str("event_id"), Some("esports-event-1"));
+        assert_eq!(info.get_str("event_slug"), Some("lol-g2-fnc-2026-09-08"));
+        assert_eq!(info.get_str("event_sport"), Some("lol"));
+        assert_eq!(
+            info.get("event_teams"),
+            Some(&json!(["G2 Esports", "Fnatic"]))
+        );
+        assert_eq!(
+            info.get_str("event_start_time"),
+            Some("2026-09-08T18:00:00Z")
+        );
+        assert_eq!(info.get_str("game_id"), Some("424242"));
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_event_scoped_instruments_fall_back_to_market_game_start_time() {
+    let state = TestServerState::default();
+    let mut events = load_json("gamma_event_esports.json");
+    events[0]
+        .as_object_mut()
+        .expect("event object")
+        .remove("startTime");
+    *state.gamma_events_response.lock().await = Some(events);
+
+    let addr = start_mock_server(state.clone()).await;
+    let client = create_gamma_domain_client(&addr);
+    let instruments = client
+        .request_instruments_by_event_params(GetGammaEventsParams::default())
+        .await
+        .unwrap();
+
+    let start_times = instruments
+        .iter()
+        .map(|instrument| {
+            let InstrumentAny::BinaryOption(binary) = instrument else {
+                panic!("Expected BinaryOption");
+            };
+            binary
+                .info
+                .as_ref()
+                .expect("info should be present")
+                .get_str("event_start_time")
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        start_times,
+        [
+            Some("2026-09-08T19:00:00Z".to_string()),
+            Some("2026-09-08T19:00:00Z".to_string()),
+            Some("2026-09-08T19:30:00Z".to_string()),
+            Some("2026-09-08T19:30:00Z".to_string()),
+        ]
+    );
+}
+
+#[rstest]
+#[tokio::test]
 async fn test_request_instruments_by_search() {
     let state = TestServerState::default();
     *state.gamma_search_response.lock().await = Some(load_json("search_response.json"));

@@ -413,10 +413,25 @@ fn flatten_event_markets(events: Vec<GammaEvent>) -> Vec<GammaMarket> {
         .into_iter()
         .flat_map(|event| {
             let event_game_id = event.game_id;
+            let event_id = event.id;
+            let event_slug = event.slug;
+            let event_sport = event.sport.map(|sport| sport.sport);
+            let event_teams: Vec<String> = event.teams.into_iter().map(|team| team.name).collect();
+            let event_start_time = event.start_time;
             event.markets.into_iter().map(move |mut market| {
                 if market.game_id.is_none() {
                     market.game_id.clone_from(&event_game_id);
                 }
+                market.event_context = Some(crate::http::models::GammaEventContext {
+                    id: event_id.clone(),
+                    slug: event_slug.clone(),
+                    sport: event_sport.clone(),
+                    teams: event_teams.clone(),
+                    start_time: event_start_time
+                        .clone()
+                        .or_else(|| market.game_start_time.clone())
+                        .or_else(|| market.event_start_time.clone()),
+                });
                 market
             })
         })

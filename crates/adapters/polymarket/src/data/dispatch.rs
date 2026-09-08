@@ -659,6 +659,12 @@ fn handle_market_message(message: MarketWsMessage, ctx: &WsMessageContext) {
 
             let dedupe_key = new_market_dedupe_key(&nm);
             let fetch_condition_id = new_market_fetch_condition_id(&nm);
+            let event_slug = nm
+                .event_message
+                .as_ref()
+                .map(|event| event.slug.trim())
+                .filter(|slug| !slug.is_empty())
+                .map(str::to_string);
             let slug = nm.slug;
 
             if ctx
@@ -706,7 +712,56 @@ fn handle_market_message(message: MarketWsMessage, ctx: &WsMessageContext) {
                     }
                 };
 
-                let result = if let Some(condition_id) = fetch_condition_id {
+                let enriched_instruments = if let Some(event_slug) = event_slug {
+                    let mut attempt = 0usize;
+
+                    loop {
+                        let fetch = gamma_client
+                            .request_instruments_by_event_slugs(vec![event_slug.clone()]);
+                        let attempt_result = tokio::select! {
+                            r = fetch => r,
+                            () = cancellation.cancelled() => {
+                                log::debug!("New market event fetch for '{event_slug}' cancelled during shutdown");
+                                return;
+                            }
+                        };
+
+                        match attempt_result {
+                            Ok(instruments) if !instruments.is_empty() => break Some(instruments),
+                            Ok(_) if attempt < NEW_MARKET_EMPTY_RECHECK_MAX_ATTEMPTS => {
+                                attempt += 1;
+                                log::debug!(
+                                    "New market event fetch retry {attempt}/{NEW_MARKET_EMPTY_RECHECK_MAX_ATTEMPTS} for event_slug='{event_slug}'",
+                                );
+                                tokio::select! {
+                                    () = tokio::time::sleep(NEW_MARKET_EMPTY_RECHECK_DELAY) => {}
+                                    () = cancellation.cancelled() => {
+                                        log::debug!("New market event fetch for '{event_slug}' cancelled during retry delay");
+                                        return;
+                                    }
+                                }
+                            }
+                            Ok(_) => {
+                                log::warn!(
+                                    "New market event fetch returned no instruments for event_slug='{event_slug}'; falling back to market fetch",
+                                );
+                                break None;
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "New market event fetch failed for event_slug='{event_slug}': {e}; falling back to market fetch",
+                                );
+                                break None;
+                            }
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                let result = if let Some(instruments) = enriched_instruments {
+                    Ok(instruments)
+                } else if let Some(condition_id) = fetch_condition_id {
                     let mut attempt = 0usize;
 
                     loop {
@@ -1714,6 +1769,8 @@ mod tests {
         max_inflight_requests: Arc<AtomicUsize>,
         seen_condition_ids: Arc<Mutex<Vec<Option<String>>>>,
         seen_slugs: Arc<Mutex<Vec<Option<String>>>>,
+        seen_event_slugs: Arc<Mutex<Vec<Option<String>>>>,
+        event_response: Arc<Mutex<Option<Value>>>,
         empty_then_success_condition_id: Arc<Mutex<Option<String>>>,
         empty_then_success_payload: Arc<Mutex<Option<Value>>>,
         per_condition_requests: Arc<Mutex<AHashMap<String, usize>>>,
@@ -1798,6 +1855,24 @@ mod tests {
         Json(serde_json::json!({"markets": markets}))
     }
 
+    async fn handle_new_market_gamma_events(
+        RawQuery(raw_query): RawQuery,
+        State(state): State<NewMarketFetchTestServerState>,
+    ) -> Json<Value> {
+        state.total_requests.fetch_add(1, Ordering::SeqCst);
+        state
+            .seen_event_slugs
+            .lock()
+            .push(query_param(raw_query, "slug"));
+        Json(
+            state
+                .event_response
+                .lock()
+                .clone()
+                .unwrap_or_else(|| serde_json::json!([])),
+        )
+    }
+
     async fn start_new_market_test_server(state: NewMarketFetchTestServerState) -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1809,6 +1884,7 @@ mod tests {
                 "/markets/keyset",
                 get(handle_new_market_gamma_markets_keyset),
             )
+            .route("/events", get(handle_new_market_gamma_events))
             .with_state(state);
 
         tokio::spawn(async move { axum::serve(listener, router).await.expect("serve failed") });
@@ -2637,6 +2713,60 @@ mod tests {
             1 + NEW_MARKET_EMPTY_RECHECK_MAX_ATTEMPTS,
             "condition-aware path should not send slug query for new_market fetch"
         );
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn new_market_event_slug_fetches_enriched_event_instruments() {
+        let state = NewMarketFetchTestServerState::default();
+        *state.event_response.lock() = Some(
+            serde_json::from_str(include_str!("../../test_data/gamma_event_esports.json"))
+                .expect("esports event fixture"),
+        );
+        let addr = start_new_market_test_server(state.clone()).await;
+        let gamma_base_url = format!("http://{addr}");
+        let (mut ctx, mut data_rx) = make_ws_ctx_with_gamma_base_url(&gamma_base_url);
+        ctx.subscribe_new_markets = true;
+        ctx.new_market_fetch_semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+
+        let MarketWsMessage::NewMarket(mut message) =
+            make_new_market_with_condition("lol-g2-fnc-moneyline", "0x111", true)
+        else {
+            panic!("expected new market message");
+        };
+        message.event_message = Some(crate::websocket::messages::PolymarketNewMarketEvent {
+            id: "esports-event-1".to_string(),
+            ticker: "lol-g2-fnc-2026-09-08".to_string(),
+            slug: "lol-g2-fnc-2026-09-08".to_string(),
+            title: "G2 Esports vs Fnatic".to_string(),
+            description: String::new(),
+        });
+        handle_market_message(MarketWsMessage::NewMarket(message), &ctx);
+        ctx.wait_for_tasks().await;
+
+        assert_eq!(
+            state.seen_event_slugs.lock().as_slice(),
+            [Some("lol-g2-fnc-2026-09-08".to_string())]
+        );
+        assert!(state.seen_condition_ids.lock().is_empty());
+        assert_eq!(ctx.instruments.load().len(), 4);
+
+        let emitted = collect_events_until(&mut data_rx, StdDuration::from_secs(1), |events| {
+            events
+                .iter()
+                .filter(|event| matches!(event, DataEvent::Instrument(_)))
+                .count()
+                == 4
+        })
+        .await;
+        for event in emitted {
+            let DataEvent::Instrument(InstrumentAny::BinaryOption(instrument)) = event else {
+                continue;
+            };
+            let info = instrument.info.as_ref().expect("instrument info");
+            assert_eq!(info.get_str("event_id"), Some("esports-event-1"));
+            assert_eq!(info.get_str("event_sport"), Some("lol"));
+        }
     }
 
     #[rstest]
