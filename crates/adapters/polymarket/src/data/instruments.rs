@@ -255,7 +255,13 @@ pub(super) fn cache_and_publish_instruments(
     now_ns: UnixNanos,
     instruments: Vec<InstrumentAny>,
 ) -> usize {
-    let mut total = 0;
+    let update_state = instrument_update_state.lock();
+    if update_state.retired {
+        return 0;
+    }
+
+    let terminal_conditions = closed_condition_ids.lock();
+    let mut applied = Vec::with_capacity(instruments.len());
 
     for instrument in instruments {
         if is_instrument_expired(&instrument, now_ns) {
@@ -266,25 +272,44 @@ pub(super) fn cache_and_publish_instruments(
             continue;
         }
 
-        let instrument_id = instrument.id();
+        let instrument = match update_state.compose_instrument(&instrument) {
+            Ok(instrument) => instrument,
+            Err(e) => {
+                log::error!(
+                    "Failed to apply live tick to instrument {}: {e}",
+                    instrument.id()
+                );
+                continue;
+            }
+        };
+        if extract_condition_id(&instrument.id())
+            .is_ok_and(|condition_id| terminal_conditions.contains(&condition_id))
+        {
+            continue;
+        }
 
-        if apply_live_instrument(
-            closed_condition_ids,
-            instrument_update_state,
-            instruments_cache,
-            token_meta,
-            &instrument,
-            |instrument| {
-                if let Err(e) = data_sender.send(DataEvent::Instrument(instrument.clone())) {
-                    log::warn!("Failed to publish instrument {instrument_id}: {e}");
-                }
-            },
-        ) {
-            total += 1;
+        token_meta.insert(
+            Ustr::from(instrument.raw_symbol().as_str()),
+            TokenMeta::from_instrument(&instrument),
+        );
+        applied.push(instrument);
+    }
+
+    instruments_cache.rcu(|cache| {
+        for instrument in &applied {
+            cache.insert(instrument.id(), instrument.clone());
+        }
+    });
+
+    drop(terminal_conditions);
+    for instrument in &applied {
+        let instrument_id = instrument.id();
+        if let Err(e) = data_sender.send(DataEvent::Instrument(instrument.clone())) {
+            log::warn!("Failed to publish instrument {instrument_id}: {e}");
         }
     }
 
-    total
+    applied.len()
 }
 
 #[allow(
@@ -845,6 +870,43 @@ mod tests {
         assert_eq!(total, 0);
         assert!(instruments.load().is_empty());
         assert!(token_meta.is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[rstest]
+    fn cache_and_publish_batch_preserves_cache_and_event_order() {
+        let instruments = Arc::new(AtomicMap::new());
+        let instrument_update_state = Arc::new(Mutex::new(InstrumentUpdateState::default()));
+        let token_meta = Arc::new(DashMap::new());
+        let closed_condition_ids = Arc::new(Mutex::new(AHashSet::new()));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let existing = stub_instrument("existing", Price::from("0.01"), Quantity::from("0.1"));
+        cache_instrument_unchecked(&instruments, &token_meta, &existing);
+        let batch = [
+            stub_instrument("token-1", Price::from("0.01"), Quantity::from("0.1")),
+            stub_instrument("token-2", Price::from("0.01"), Quantity::from("0.1")),
+        ];
+
+        let total = cache_and_publish_instruments(
+            &closed_condition_ids,
+            &instrument_update_state,
+            &instruments,
+            &token_meta,
+            &tx,
+            UnixNanos::default(),
+            batch.to_vec(),
+        );
+
+        assert_eq!(total, batch.len());
+        assert_eq!(instruments.len(), 3);
+        assert_eq!(token_meta.len(), 3);
+        for expected in batch {
+            let DataEvent::Instrument(published) = rx.try_recv().unwrap() else {
+                unreachable!()
+            };
+            assert_eq!(published.id(), expected.id());
+            assert!(instruments.contains_key(&published.id()));
+        }
         assert!(rx.try_recv().is_err());
     }
 
