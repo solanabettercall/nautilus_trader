@@ -74,7 +74,7 @@ repos:
         args: [--strict]
 
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.30.0
+    rev: v1.30.1
     hooks:
       - id: zizmor
         name: zizmor (security)
@@ -459,6 +459,7 @@ repos:
         files: >-
           (?x)^(
             (?:.*/)?Cargo\.(lock|toml)|
+            \.supply-chain/crate-dates\.json|
             scripts/check-cargo-cooldown\.sh
           )$
         pass_filenames: false
@@ -509,7 +510,7 @@ repos:
           - "--in-place"
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.12.9 # Must match [uv] in .nautilus-engineering/tools.toml
+    rev: 0.12.12 # Must match [uv] in .nautilus-engineering/tools.toml
     hooks:
       - id: uv-lock
         args: ["--project", "python"]
