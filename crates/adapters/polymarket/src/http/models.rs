@@ -15,7 +15,7 @@
 
 //! HTTP REST model types for the Polymarket CLOB API.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[cfg(test)]
 use nautilus_core::string::secret::REDACTED;
@@ -448,6 +448,8 @@ pub struct GammaEvent {
     /// Original Gamma response as a JSON string, before normalization or enrichment.
     #[serde(skip)]
     pub raw: String,
+    #[serde(skip)]
+    instrument_metadata: OnceLock<String>,
     pub id: String,
     pub slug: Option<String>,
     pub title: Option<String>,
@@ -506,6 +508,17 @@ pub struct GammaEvent {
 }
 
 impl_gamma_response_serde!(GammaEvent);
+
+impl GammaEvent {
+    pub(crate) fn instrument_metadata(&self) -> &str {
+        self.instrument_metadata.get_or_init(|| {
+            let mut fields: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&self.raw).expect("Gamma event raw must be valid JSON");
+            fields.remove("markets");
+            serde_json::to_string(&fields).expect("Gamma event metadata must serialize")
+        })
+    }
+}
 
 /// A tag from the Gamma API `GET /tags`.
 #[derive(Clone, Debug, Deserialize, Serialize)]

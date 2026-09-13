@@ -110,13 +110,7 @@ pub fn parse_gamma_market(market: &GammaMarket) -> anyhow::Result<Vec<Polymarket
     let gamma_event = market
         .parent_event
         .as_ref()
-        .map(|event| -> anyhow::Result<String> {
-            let mut fields: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_str(&event.raw)?;
-            fields.remove("markets");
-            Ok(serde_json::to_string(&fields)?)
-        })
-        .transpose()?;
+        .map(|event| event.instrument_metadata().to_owned());
 
     let game_id = market.game_id.clone().or_else(|| {
         market
