@@ -55,7 +55,7 @@ pub struct PolymarketInstrumentDef {
     /// Original Gamma market response.
     #[serde(default)]
     pub gamma_market: String,
-    /// Original enclosing event response from event-based discovery.
+    /// Enclosing event response without nested markets from event-based discovery.
     pub gamma_event: Option<String>,
     /// Question ID (resolution hash).
     pub question_id: Option<String>,
@@ -107,6 +107,16 @@ pub struct PolymarketInstrumentDef {
 /// and one for the No outcome.
 pub fn parse_gamma_market(market: &GammaMarket) -> anyhow::Result<Vec<PolymarketInstrumentDef>> {
     let event_id = market_event_id(market);
+    let gamma_event = market
+        .parent_event
+        .as_ref()
+        .map(|event| -> anyhow::Result<String> {
+            let mut fields: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&event.raw)?;
+            fields.remove("markets");
+            Ok(serde_json::to_string(&fields)?)
+        })
+        .transpose()?;
 
     let game_id = market.game_id.clone().or_else(|| {
         market
@@ -167,7 +177,7 @@ pub fn parse_gamma_market(market: &GammaMarket) -> anyhow::Result<Vec<Polymarket
             market_id: market.id.clone(),
             event_id,
             gamma_market: market.raw.clone(),
-            gamma_event: market.parent_event.as_ref().map(|event| event.raw.clone()),
+            gamma_event: gamma_event.clone(),
             question_id: market.question_id.clone(),
             outcome,
             question: market.question.clone(),

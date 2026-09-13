@@ -1016,7 +1016,11 @@ mod tests {
             let defs = parse_gamma_market(market).unwrap();
             for def in defs {
                 assert_eq!(def.event_id.unwrap().as_str(), parent.id);
-                assert_eq!(def.gamma_event.as_ref(), Some(&parent.raw));
+                let event: Value =
+                    serde_json::from_str(def.gamma_event.as_deref().unwrap()).unwrap();
+                let mut expected_event = expected_event.clone();
+                expected_event.as_object_mut().unwrap().remove("markets");
+                assert_eq!(event, expected_event);
                 assert_eq!(def.gamma_market, market.raw);
                 let instrument = create_instrument_from_def(&def, 1.into()).unwrap();
 
@@ -1026,9 +1030,40 @@ mod tests {
 
                 let info = binary.info.unwrap();
                 assert_eq!(binary.event_id.unwrap().as_str(), parent.id);
-                assert_eq!(info.get_str("gamma_event"), Some(parent.raw.as_str()));
+                assert_eq!(
+                    serde_json::from_str::<Value>(info.get_str("gamma_event").unwrap()).unwrap(),
+                    expected_event,
+                );
                 assert_eq!(info.get_str("gamma_market"), Some(market.raw.as_str()));
             }
+        }
+    }
+
+    #[rstest]
+    fn test_sports_event_metadata_keeps_teams_without_markets() {
+        let events: Vec<GammaEvent> = serde_json::from_str(include_str!(
+            "../../test_data/gamma_event_sports_composite_game_id.json"
+        ))
+        .unwrap();
+        let markets = flatten_event_markets(events);
+
+        for market in markets {
+            let def = parse_gamma_market(&market).unwrap().remove(0);
+            let instrument = create_instrument_from_def(&def, 1.into()).unwrap();
+            let InstrumentAny::BinaryOption(binary) = instrument else {
+                unreachable!()
+            };
+            let info = binary.info.unwrap();
+            let event: Value = serde_json::from_str(info.get_str("gamma_event").unwrap()).unwrap();
+
+            assert_eq!(event["startTime"], "2026-08-14T21:00:00Z");
+            assert_eq!(event["teams"][0]["name"], "St. Louis Shock");
+            assert_eq!(event["teams"][0]["ordering"], "home");
+            assert_eq!(event["teams"][1]["name"], "Texas Ranchers");
+            assert_eq!(event["teams"][1]["ordering"], "away");
+            assert!(event.get("markets").is_none());
+            let parent = market.parent_event.as_ref().unwrap();
+            assert!(parent.raw.contains("\"markets\""));
         }
     }
 
