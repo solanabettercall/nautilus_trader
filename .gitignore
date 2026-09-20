@@ -38,6 +38,8 @@ logs/
 *.iml
 .idea/
 .vscode/
+.codegraph/
+.direnv/
 
 # Benchmarking and coverage
 .benchmarks*

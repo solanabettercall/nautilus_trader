@@ -894,7 +894,7 @@ mod tests {
             &instrument_update_state,
             &instruments,
             &token_meta,
-            &tx,
+            &tx.into(),
             UnixNanos::default(),
             batch.to_vec(),
         );
