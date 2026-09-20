@@ -17,7 +17,9 @@ use std::{sync::Arc, time::Duration};
 
 use ahash::{AHashMap, AHashSet};
 use dashmap::DashMap;
-use nautilus_common::{messages::DataEvent, providers::InstrumentProvider};
+use nautilus_common::{
+    live::sender::EventSender, messages::DataEvent, providers::InstrumentProvider,
+};
 use nautilus_core::{AtomicMap, UnixNanos, time::AtomicTime};
 use nautilus_model::{
     identifiers::InstrumentId,
@@ -188,7 +190,7 @@ pub(super) fn publish_cached_condition_closed(
     condition_id: &str,
     instrument_update_state: &Arc<Mutex<InstrumentUpdateState>>,
     instruments: &Arc<AtomicMap<InstrumentId, InstrumentAny>>,
-    data_sender: &tokio::sync::mpsc::UnboundedSender<DataEvent>,
+    data_sender: &EventSender<DataEvent>,
 ) -> usize {
     let update_state = instrument_update_state.lock();
     if update_state.retired {
@@ -251,7 +253,7 @@ pub(super) fn cache_and_publish_instruments(
     instrument_update_state: &Arc<Mutex<InstrumentUpdateState>>,
     instruments_cache: &Arc<AtomicMap<InstrumentId, InstrumentAny>>,
     token_meta: &Arc<DashMap<Ustr, TokenMeta>>,
-    data_sender: &tokio::sync::mpsc::UnboundedSender<DataEvent>,
+    data_sender: &EventSender<DataEvent>,
     now_ns: UnixNanos,
     instruments: Vec<InstrumentAny>,
 ) -> usize {
@@ -324,7 +326,7 @@ pub(super) async fn refresh_scoped_instruments(
     instrument_update_state: &Arc<Mutex<InstrumentUpdateState>>,
     instruments_cache: &Arc<AtomicMap<InstrumentId, InstrumentAny>>,
     token_meta: &Arc<DashMap<Ustr, TokenMeta>>,
-    data_sender: &tokio::sync::mpsc::UnboundedSender<DataEvent>,
+    data_sender: &EventSender<DataEvent>,
     clock: &'static AtomicTime,
 ) -> anyhow::Result<usize> {
     // Defaulted rather than returning early: a client can carry registered filters with
@@ -424,7 +426,7 @@ async fn probe_closed_condition_ids(
 pub(super) async fn refresh_expired_market_closure(
     http: &PolymarketGammaHttpClient,
     cache: &Arc<AtomicMap<InstrumentId, InstrumentAny>>,
-    sender: &tokio::sync::mpsc::UnboundedSender<DataEvent>,
+    sender: &EventSender<DataEvent>,
     now_ns: UnixNanos,
     closed_condition_ids: &Arc<parking_lot::Mutex<AHashSet<String>>>,
     ws_sub_mutex: &Arc<tokio::sync::Mutex<()>>,
@@ -862,7 +864,7 @@ mod tests {
             &instrument_update_state,
             &instruments,
             &token_meta,
-            &tx,
+            &tx.into(),
             UnixNanos::default(),
             vec![instrument],
         );
@@ -1031,7 +1033,7 @@ mod tests {
         let result = refresh_expired_market_closure(
             &client,
             &instruments,
-            &tx,
+            &tx.clone().into(),
             UnixNanos::from(u64::MAX),
             &closed_condition_ids,
             &ws_sub_mutex,
@@ -1124,7 +1126,7 @@ mod tests {
         let result = refresh_expired_market_closure(
             &client,
             &instruments,
-            &tx,
+            &tx.clone().into(),
             UnixNanos::from(u64::MAX),
             &closed_condition_ids,
             &ws_sub_mutex,

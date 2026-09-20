@@ -14,7 +14,8 @@ recommended values, see
 
 ## Reconciliation model
 
-Only the `LiveExecutionEngine` performs reconciliation, since backtesting controls both sides.
+Live execution reconciles local state against venue reports. Backtesting controls both order
+execution and the resulting state, so it does not need venue reconciliation.
 
 Two scenarios:
 
@@ -26,6 +27,70 @@ Persist all execution events to the cache database. This reduces reliance on ven
 and gives reconciliation the retained order and position state needed to interpret short history
 windows.
 :::
+
+### Component responsibilities
+
+`LiveNode` owns the `ExecutionManager` and schedules recurring reconciliation. The manager tracks
+activity, retries, and fill identities, interprets cached state, and prepares reconciliation events.
+`ExecutionEngine` applies events to orders and positions and handles individual execution reports.
+
+The UML diagram shows ownership and dependencies. A filled diamond denotes ownership; dashed arrows
+point from a caller to a component it uses. The kernel owns the engine and shared cache; it is omitted
+here to focus on reconciliation.
+
+```mermaid
+classDiagram
+    direction LR
+
+    namespace nautilus_live {
+        class LiveNode
+        class ExecutionManager
+    }
+    namespace nautilus_execution {
+        class ExecutionEngine
+    }
+    namespace nautilus_common {
+        class ExecutionClient {
+            <<interface>>
+        }
+        class Cache
+    }
+
+    LiveNode *-- ExecutionManager : owns
+    LiveNode ..> ExecutionClient : requests recurring reports
+    LiveNode ..> ExecutionEngine : dispatches through kernel
+    ExecutionManager ..> ExecutionClient : polls reports for standalone checks
+    ExecutionManager ..> ExecutionEngine : applies startup events
+    ExecutionManager ..> Cache : reads state and registers external orders
+    ExecutionEngine ..> ExecutionClient : routes commands and requests reports
+    ExecutionEngine ..> Cache : updates orders and positions
+```
+
+The live client facade shares one adapter instance between the node and engine. Pending report
+requests can retain client borrows while the event loop handles other work. Instrument updates are
+deferred until those borrows are released, then flushed on request completion or cancellation.
+
+Within `nautilus-live`, the source modules divide these responsibilities as follows:
+
+| Module                        | Responsibility                                                           |
+| ----------------------------- | ------------------------------------------------------------------------ |
+| `node/mod.rs`                 | Node lifecycle, event loop, and event dispatch.                          |
+| `node/reconciliation.rs`      | Recurring report tasks, deadlines, cancellation, and result handling.    |
+| `execution/manager.rs`        | Reconciliation state, decisions, and individual reconciliation checks.   |
+| `execution/reconciliation.rs` | Shared types, state-independent decisions, and targeted report requests. |
+
+The separate `nautilus_execution::reconciliation` module supplies report-to-event and arithmetic
+operations shared with the execution engine.
+
+At startup, the manager publishes raw reports, applies order and fill events, verifies historical
+fill application, and then evaluates positions against the updated cache. During continuous
+position checks, the node coordinates authoritative fill queries and dispatch before asking the
+manager to generate synthetic events. Activity revisions detect local changes during requests or
+callbacks; applying authoritative fills defers synthetic reconciliation until a fresh position report.
+
+The manager remains available without the `node` feature. Standalone callers can use its individual
+polling methods and apply the returned events themselves. Standalone position polling directly
+returns synthetic discrepancy events; the node adds the authoritative-fill recovery sequence.
 
 ### Execution-client origins
 
@@ -86,6 +151,48 @@ Adapters choose the variant that matches the venue event:
   Hyperliquid liquidations follow this pattern.
 - Use `OrderWithFills` when one venue event contains both an order status and its fills. Binance
   Futures uses this for exchange-generated ADL, liquidation, and settlement orders.
+
+### Snapshot freshness and fill corrections
+
+A snapshot must not undo a fill that occurs after the state it describes. Receiving a snapshot
+after a stream event does not make the snapshot newer: REST requests and stream delivery can
+overlap during recovery. For example, a request can observe zero filled quantity, a stream can
+then deliver a fill of five units, and the older response can arrive last. Interpreting that
+response as a correction would wrongly void the five units.
+
+Snapshot corrections require a distinction between:
+
+- **A snapshot that predates a fill**: its lower filled quantity does not establish that the fill
+  was voided.
+- **A snapshot that covers the fill and reports a reduction**: the reduction can represent a
+  genuine correction, derived from retained fill history.
+- **An explicit venue fill-void event**: process it under the
+  [OrderFillVoided contract](../events/order_fill_voided.md), including its identity, quantity,
+  and ordering checks. It does not depend on inferring a correction from a snapshot total.
+
+Timestamp meaning matters when establishing coverage. The Derive adapter reports an order-update timestamp;
+Betfair's `matchedDate` describes the last match, not the time of a snapshot or correction.
+Response arrival time, equal timestamps, or timestamps from different clocks do not by themselves
+prove that a snapshot includes a fill.
+
+Rejecting a genuine correction as stale can leave local filled quantity and exposure overstated
+until later reconciliation resolves the discrepancy. Conversely, a stale snapshot carrying a
+misleadingly newer timestamp can still cause a false void if freshness checks trust that timestamp.
+
+The execution engine applies mass-status filled-quantity decreases to retained fills even when the
+snapshot contains no companion trades. It automatically skips an order snapshot when a cached fill
+or fill void has a local initialization timestamp at or after collection starts (`ExecutionMassStatus.ts_init`).
+This skips all changes from that order report, including status, quantity, and price updates.
+The engine still publishes the raw report and processes companion trades through normal deduplication.
+It does not queue the skipped snapshot. A later snapshot can apply a genuine correction once
+collection starts after the cached fill activity. This requires no configuration and does not
+suppress explicit fill-void events.
+
+This protection applies to runtime mass-status handling in `ExecutionEngine`. Startup reconciliation
+uses `ExecutionManager`, which does not apply this timestamp boundary. For runtime protection,
+adapters must capture the mass-status timestamp before collecting reports, using the same local
+clock as fill events. This boundary protects against overlapping local activity; it cannot detect
+venue state that is already stale when collection starts.
 
 ### Order-only fill projection
 
@@ -182,9 +289,11 @@ it repairs order history without changing the position.
 
 ## Reconciliation configuration
 
-Unless `reconciliation` is set to false, the execution engine reconciles state for each
-venue at startup. The `reconciliation_lookback_mins` parameter controls how far back the
-engine requests history.
+Unless `reconciliation` is set to false, the live node runs startup reconciliation for each
+execution client. The `reconciliation_lookback_mins` parameter controls how far back it requests
+history through the execution engine. Startup enablement and polling intervals belong to the node's
+`LiveExecutionEngineConfig`; the manager receives the thresholds, retry limits, filters, and lookbacks
+used to make reconciliation decisions.
 
 :::tip
 Leave `reconciliation_lookback_mins` unset to use the adapter's documented default. Many adapters
