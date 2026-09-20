@@ -518,6 +518,26 @@ impl SimulatedExchange {
         Ok(())
     }
 
+    /// Updates an existing instrument without replacing its matching engine.
+    pub fn update_instrument(&mut self, instrument: InstrumentAny) -> anyhow::Result<()> {
+        let instrument_id = instrument.id();
+        check_equal(
+            &instrument_id.venue,
+            &self.id,
+            "Venue of instrument id",
+            "Venue of simulated exchange",
+        )
+        .expect_display(FAILED);
+
+        let matching_engine = self
+            .matching_engines
+            .get_mut(&instrument_id)
+            .ok_or_else(|| anyhow::anyhow!("No matching engine for instrument {instrument_id}"))?;
+        matching_engine.update_instrument(instrument.clone())?;
+        self.instruments.insert(instrument_id, instrument);
+        Ok(())
+    }
+
     /// Sets the deferred event handler used while a trading command is processed
     /// synchronously.
     ///

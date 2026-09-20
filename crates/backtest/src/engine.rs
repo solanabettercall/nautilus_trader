@@ -1560,8 +1560,7 @@ impl BacktestEngine {
     ) -> anyhow::Result<()> {
         if matches!(
             data,
-            DataRef::Instrument(_)
-                | DataRef::MarkPrice(_)
+            DataRef::MarkPrice(_)
                 | DataRef::IndexPrice(_)
                 | DataRef::OptionGreeks(_)
                 | DataRef::Custom(_)
@@ -1609,9 +1608,10 @@ impl BacktestEngine {
                 DataRef::InstrumentClose(close) => {
                     exchange_ref.process_instrument_close(*close)?;
                 }
-                DataRef::Instrument(_) | DataRef::Custom(_) => {
-                    unreachable!("filtered before exchange routing")
+                DataRef::Instrument(instrument) => {
+                    exchange_ref.update_instrument(instrument.clone())?;
                 }
+                DataRef::Custom(_) => unreachable!("filtered before exchange routing"),
                 #[cfg(feature = "defi")]
                 DataRef::Defi(_) => unreachable!("filtered before exchange routing"),
             }
