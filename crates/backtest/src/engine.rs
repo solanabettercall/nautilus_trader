@@ -3832,6 +3832,52 @@ mod tests {
     }
 
     #[rstest]
+    fn test_route_data_to_exchange_instrument_revision_preserves_book(
+        crypto_perpetual_ethusdt: CryptoPerpetual,
+    ) {
+        let mut engine = create_engine();
+        let instrument_id = crypto_perpetual_ethusdt.id;
+        engine
+            .add_instrument(&InstrumentAny::CryptoPerpetual(
+                crypto_perpetual_ethusdt.clone(),
+            ))
+            .unwrap();
+        let quote = QuoteTick::new(
+            instrument_id,
+            Price::from("100.00"),
+            Price::from("101.00"),
+            Quantity::from("1.000"),
+            Quantity::from("1.000"),
+            UnixNanos::from(1),
+            UnixNanos::from(1),
+        );
+        BacktestEngine::route_data_to_exchange(
+            &engine.venues,
+            &mut engine.has_book_processed,
+            &engine.kernel.clock,
+            DataRef::Quote(&quote),
+        )
+        .unwrap();
+
+        let mut revision = crypto_perpetual_ethusdt;
+        revision.taker_fee = "0.01".parse().unwrap();
+        revision.ts_init = UnixNanos::from(2);
+        let revision = InstrumentAny::CryptoPerpetual(revision);
+        BacktestEngine::route_data_to_exchange(
+            &engine.venues,
+            &mut engine.has_book_processed,
+            &engine.kernel.clock,
+            DataRef::Instrument(&revision),
+        )
+        .unwrap();
+
+        let exchange = engine.venues.get(&instrument_id.venue).unwrap().borrow();
+        let matching_engine = exchange.get_matching_engine(&instrument_id).unwrap();
+        assert_eq!(matching_engine.instrument.taker_fee(), revision.taker_fee());
+        assert_eq!(matching_engine.best_bid_price(), Some(Price::from("100.00")));
+    }
+
+    #[rstest]
     fn test_route_data_to_exchange_instrument_status(crypto_perpetual_ethusdt: CryptoPerpetual) {
         let mut engine = create_engine();
         let instrument = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt);
