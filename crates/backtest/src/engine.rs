@@ -529,8 +529,8 @@ impl BacktestEngine {
                 continue;
             }
 
-            if matches!(item, DataRef::Custom(_)) {
-                // Custom data routes by DataType and is independent of market venue bookkeeping.
+            if matches!(item, DataRef::Custom(_) | DataRef::Instrument(_)) {
+                // Instrument revisions are metadata, not market data requiring book coverage.
                 continue;
             }
 
@@ -3829,6 +3829,21 @@ mod tests {
             DataCommand::Unsubscribe(UnsubscribeCommand::Quotes(command))
                 if command.instrument_id == instrument_id
         )));
+    }
+
+    #[rstest]
+    fn test_instrument_revision_does_not_require_book_data(
+        crypto_perpetual_ethusdt: CryptoPerpetual,
+    ) {
+        let mut engine = create_engine();
+        let instrument = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt);
+        engine.add_instrument(&instrument).unwrap();
+        engine
+            .add_data(vec![Data::Instrument(Box::new(instrument))], None, false, true)
+            .unwrap();
+        assert!(engine.has_data.is_empty());
+        engine.run(None, None, None, true).unwrap();
+        engine.end().unwrap();
     }
 
     #[rstest]
