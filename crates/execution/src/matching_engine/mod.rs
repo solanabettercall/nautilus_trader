@@ -2711,13 +2711,22 @@ impl OrderMatchingEngine {
             self.generate_order_accepted(&order, venue_order_id);
 
             if let Some(fill_price) = close_price {
-                if let Err(e) = self.apply_fills(
+                // Contract settlement prices (notably 0 and 1 for binary options)
+                // are terminal payoffs, not tradable ticks, so bypass tick validation.
+                let position = self
+                    .cache
+                    .borrow()
+                    .position(&position_id)
+                    .map(|position| position.clone_without_events());
+                let venue_position_id =
+                    (self.oms_type != OmsType::Netting).then_some(position_id);
+                if let Err(e) = self.fill_order(
                     &order,
-                    &[(fill_price, quantity)],
+                    fill_price,
+                    quantity,
                     LiquiditySide::Taker,
-                    Some(position_id),
-                    None,
-                    None,
+                    venue_position_id,
+                    position.as_ref(),
                 ) {
                     log::error!("Cannot fill expiration order {client_order_id}: {e}");
                 }

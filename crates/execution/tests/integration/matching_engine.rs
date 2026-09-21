@@ -15850,8 +15850,11 @@ fn test_check_instrument_expiration_restored_position_closes_without_prior_order
 }
 
 #[rstest]
+#[case("0.000")]
+#[case("1.000")]
 fn test_binary_option_pending_resolution_then_instrument_close_settles_position(
     account_id: AccountId,
+    #[case] settlement_price: &str,
 ) {
     let cache = Rc::new(RefCell::new(Cache::default()));
     let order_event_handler = order_event_handler_with_cache(cache.clone());
@@ -15985,9 +15988,10 @@ fn test_binary_option_pending_resolution_then_instrument_close_settles_position(
     );
 
     clear_order_event_handler_messages(&order_event_handler);
+    let settlement_price = Price::from(settlement_price);
     let close = InstrumentClose::new(
         instrument.id(),
-        Price::from("1.000"),
+        settlement_price,
         InstrumentCloseType::ContractExpired,
         UnixNanos::from(2),
         UnixNanos::from(2),
@@ -16005,7 +16009,7 @@ fn test_binary_option_pending_resolution_then_instrument_close_settles_position(
             _ => None,
         })
         .expect("expected settlement fill from instrument close");
-    assert_eq!(settlement_fill.last_px, Price::from("1.000"));
+    assert_eq!(settlement_fill.last_px, settlement_price);
     let _ = position;
 }
 
